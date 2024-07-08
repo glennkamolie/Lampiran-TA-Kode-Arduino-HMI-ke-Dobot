@@ -1512,7 +1512,10 @@ void moveArm(float x, float y, float z, float r, bool vacuumOn) {
    Serial.print(" y:");
    Serial.print(gPTPCmd.y);
    Serial.print(" z:");
+   Serial.print(gPTPCmd.z);
+   Serial.print(" r:");
    Serial.println(gPTPCmd.r);
+
 
    SetPTPCmd(&gPTPCmd, true, &gQueuedCmdIndex);
 
