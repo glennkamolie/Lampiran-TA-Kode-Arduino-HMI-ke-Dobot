@@ -1,0 +1,1788 @@
+#include <EEPROM.h>   //Library untuk mengirimkan data ke EEPROM
+#include <Nextion.h>  //Library untuk HMI (Nextion)
+#include <Pixy2.h>    //Library untuk Pixy2
+#include <avr/wdt.h>  //Library untuk reset arduino kalau loop terlalu lama, juga bisa untuk soft reset
+
+//Const untuk port input
+const int led = 13;
+const int signaturePart1 = 1;  //Nomor signature untuk PixyMon untuk warna pertama
+const int signaturePart2 = 2;  //Nomor signature untuk PixyMon untuk warna kedua
+const int signaturePart3 = 3;  //Nomor signature untuk PixyMon untuk warna ketiga
+const int signatureCalib = 7;  //Nomor signature untuk PixyMon untuk titik kalibrasi
+
+//Variabel untuk transformasi koordinat dari kertas kalibrasi ke koordinat Dobot Magician
+float a1X = 0;  //a1X - c1X merupakan titik di kertas kalibrasi sumbu X pada system koordinat Pixy2
+float b1X = 0;
+float c1X = 0;  
+float a1Y = 0;  //a1Y - c1Y merupakan titik di kertas kalibrasi sumbu Y pada system koordinat Pixy2
+float b1Y = 0;
+float c1Y = 0;  
+float a2X = 0;  //a2X - c2X merupakan titik kalibrasi sumbu X pada system koordinat Dobot Magician
+float b2X = 0;
+float c2X = 0;  
+float a2Y = 0;  //a2Y - c2Y merupakan titik kalibrasi sumbu Y pada system koordinat Dobot Magician
+float b2Y = 0;
+float c2Y = 0;  
+float scaleX = 0; 
+float scaleY = 0;
+float lr1 = 0;
+float lr2 = 0;          
+float tempFloatVar = 0;  //Variabel untuk penyimpanan data sementara (digunakan untuk menukar nilai variable) 
+float tempFloatVarX = 0;
+float tempFloatVarY = 0;
+int tempIntVarSignature = 0;  
+float startPosX = 200.00;
+float startPosY = 0.00;
+float startPosZ = 0.00;
+float startPosR = 0.00;  
+float calXpos = 200.00;
+float calYpos = 0.00;
+float calZpos = 100.00;
+float calRpos = 0.00;  
+float dropLocation1X = 200.00;  //Variabel menyimpan lokasi drop position signature pertama hingga ketiga
+float dropLocation1Y = 0.00;
+float dropLocation1Z = 0.00;
+float dropLocation1R = 0.00;  
+float dropLocation2X = 200.00;
+float dropLocation2Y = 0.00;
+float dropLocation2Z = 0.00;
+float dropLocation2R = 0.00;  
+float dropLocation3X = 200.00;
+float dropLocation3Y = 0.00;
+float dropLocation3Z = 0.00;
+float dropLocation3R = 0.00; 
+ 
+float currentX = startPosX;
+float currentY = startPosY;
+float currentZ = startPosZ;
+float currentR = startPosR;
+
+bool currentVac = false;
+int endeffectorGripper = 0;  //Untuk menentukan jenis end-effector: 1 untuk Gripper, 0 untuk Vacuum Cup
+
+float zDownPos = 0;
+float pixyPartSignature = 0;
+float pixyPartX = 0;
+float pixyPartY = 0;      // part found by pixy camera
+
+int signature1Found = 0;  //Untuk menghitung berapa banyak warna signature pertama
+int signature2Found = 0;  //Untuk menghitung berapa banyak warna signature kedua
+int signature3Found = 0;  //Untuk menghitung berapa banyak warna signature ketiga
+int activeSignature = 0;  //Nomor signature yang digunakan untuk pick and place
+
+float partWidth = 0;  //Dimensi objek yang didapat Pixy2
+float partHeight = 0;  
+
+float dobotPartX = 0;
+float dobotPartY = 0;
+float angle1 = 0;  //Sudut rotasi dari kertas kalibrasi ke system koordinat Pixy2
+float angle2 = 0;  //Sudut rotasi dari kertas kalibrasi ke system koordinat Dobot Magician 
+
+float intermediateX = 0;
+float intermediateY = 0;  
+
+float moveInterval = 1.0;  //Peningkatan Jarak dalam mm yang digunakan dalam jogging
+int activeAxis = 1;        //Sumbu yang diatur dalam jogging
+
+bool refreshScreen = true; 
+bool autoCycleOn = false;   //Untuk menyalakan system pick and place otomatis
+
+//Variabel yang digunakan untuk timer delay tanpa fungsi delay
+unsigned long previousMillis = 0;
+unsigned long currentMillis = 0;
+long delayInterval = 1500;  //Variabel delay antara pergerakan Dobot Magician
+int moveStep = 0;           //Nomor index untuk pergerakan langkah dalam sistem pick and place otomatis
+
+int eePromIntVar = 0;
+float eePromFloatVar = 0;
+
+uint32_t speedRatio = 0;
+uint32_t accelRatio = 0;
+
+String displayText = "..."; //Variabel untuk HMI (Nextion)
+int CurrentPage = 0;
+
+//Address EEPROM
+int eeAddressStartPosAvailable = 0;  //Start position avaliable? (Atur nilai address menjadi 999 ketika posisi Start telah terisi di EEPROM)
+float eeAddressStartPosX = 4;
+float eeAddressStartPosY = 8;
+float eeAddressStartPosZ = 12;
+float eeAddressStartPosR = 16;
+int eeAddressCalPosAvailable = 20;  //Calibration position available? (Atur nilai address menjadi 999 ketika posisi kalibrasi telah terisi di EEPROM)
+float eeAddressCalXpos = 24;
+float eeAddressCalYpos = 28;
+float eeAddressCalZpos = 32;
+float eeAddressCalRpos = 36;
+int eeAddressA1Available = 40;  //A1 calibration coordinates available? (Atur nilai address menjadi 999 ketika koordinat kalibrasi telah terisi di EEPROM)
+float eeAddressA1x = 44;
+float eeAddressA1y = 48;
+int eeAddressB1Available = 52;  //B1 calibration coordinates available? (Atur nilai address menjadi 999 ketika koordinat kalibrasi telah terisi di EEPROM)
+float eeAddressB1x = 56;
+float eeAddressB1y = 60;
+int eeAddressC1Available = 64;  //C1 calibration coordinates available? (Atur nilai address menjadi 999 ketika koordinat kalibrasi telah terisi di EEPROM)
+float eeAddressC1x = 68;
+float eeAddressC1y = 72;
+int eeAddressA2Available = 76;  //A2 calibration coordinates available? (Atur nilai address menjadi 999 ketika koordinat kalibrasi telah terisi di EEPROM)
+float eeAddressA2x = 80;
+float eeAddressA2y = 84;
+int eeAddressB2Available = 88;  //B2 calibration coordinates available? (Atur nilai address menjadi 999 ketika koordinat kalibrasi telah terisi di EEPROM)
+float eeAddressB2x = 92;
+float eeAddressB2y = 96;
+int eeAddressC2Available = 100;  //C2 calibration coordinates available? (Atur nilai address menjadi 999 ketika koordinat kalibrasi telah terisi di EEPROM)
+float eeAddressC2x = 104;
+float eeAddressC2y = 108;
+int eeAddressZdownAvailable = 112;  //Z-down position available? (Atur nilai address menjadi 999 ketika koordinat kalibrasi telah terisi di EEPROM)
+float eeAddressZdown = 116;
+int eeAddressDropLocation1Available = 120;  //Drop location 1 coordinates available? (Atur nilai address menjadi 999 ketika koordinat telah terisi di EEPROM)
+float eeAddressDropLocation1X = 124;
+float eeAddressDropLocation1Y = 128;
+float eeAddressDropLocation1Z = 132;
+float eeAddressDropLocation1R = 136;
+int eeAddressDropLocation2Available = 140;  //Drop location 2 coordinates available? (Atur nilai address menjadi 999 ketika koordinat telah terisi di EEPROM)
+float eeAddressDropLocation2X = 144;
+float eeAddressDropLocation2Y = 148;
+float eeAddressDropLocation2Z = 152;
+float eeAddressDropLocation2R = 156;
+int eeAddressDropLocation3Available = 160;  //Drop location 3 coordinates available? (Atur nilai address menjadi 999 ketika koordinat telah terisi di EEPROM)
+float eeAddressDropLocation3X = 164;
+float eeAddressDropLocation3Y = 168;
+float eeAddressDropLocation3Z = 172;
+float eeAddressDropLocation3R = 176;
+int eeAddressEndefectorAvailable = 180;  //End-effector type available? (Atur nilai address menjadi 999 ketika jenis end-effector telah terisi di EEPROM)
+int eeAddressEndeffector = 184;
+int eeAddressSpeedRatioAvailable = 188;  //Speed ratio available? (Atur nilai address menjadi 999 ketika speed ratio telah terisi di EEPROM)
+int eeAddressSpeedRatio = 192;
+int eeAddressAccelRatioAvailable = 196;  //Acceleration ratio available? (Atur nilai address menjadi 999 ketika acceleration ratio telah terisi di EEPROM)
+int eeAddressAccelRatio = 200;
+int eeAddressDelayAvailable = 204;  //Delay interval available? (Atur nilai address menjadi 999 ketika delay telah terisi di EEPROM)
+int eeAddressDelay = 208;
+
+/****** Nextion Display *****************************************************************************
+Declare your Nextion objects , pageid, component id., component name */
+
+NexPage page0 = NexPage(0, 0, "page0");
+NexPage page1 = NexPage(1, 0, "page1");
+NexPage page2 = NexPage(2, 0, "page2");
+NexPage page3 = NexPage(3, 0, "page3");
+NexPage page4 = NexPage(4, 0, "page4");
+NexDSButton bt0 = NexDSButton(0, 7, "bt0");  
+NexDSButton bt1 = NexDSButton(0, 10, "bt1");
+NexDSButton bt2 = NexDSButton(0, 11, "bt2");
+NexDSButton bt3 = NexDSButton(0, 12, "bt3");
+NexDSButton bt4 = NexDSButton(0, 13, "bt4");
+NexDSButton bt5 = NexDSButton(0, 14, "bt5");
+NexDSButton bt6 = NexDSButton(0, 15, "bt6");
+NexDSButton bt7 = NexDSButton(0, 16, "bt7");
+NexDSButton bt8 = NexDSButton(0, 17, "bt8");
+NexDSButton bt9 = NexDSButton(1, 6, "bt9");
+NexDSButton bt10 = NexDSButton(1, 11, "bt10");
+NexButton b0 = NexButton(0, 3, "b0");
+NexButton b1 = NexButton(0, 4, "b1");
+NexButton b2 = NexButton(0, 6, "b2");
+NexButton b7 = NexButton(0, 8, "b7");
+NexButton b12 = NexButton(0, 9, "b12");
+NexButton b16 = NexButton(0, 22, "b16");
+NexButton b3 = NexButton(1, 3, "b3");
+NexButton b4 = NexButton(1, 4, "b4");
+NexButton b5 = NexButton(1, 5, "b5");
+NexButton b17 = NexButton(1, 12, "b17");
+NexButton b8 = NexButton(2, 4, "b8");
+NexButton b9 = NexButton(2, 5, "b9");
+NexButton b10 = NexButton(2, 6, "b10");
+NexButton b20 = NexButton(2, 8, "b20");
+NexButton b21 = NexButton(2, 9, "b21");
+NexButton b22 = NexButton(2, 10, "b22");
+NexButton b23 = NexButton(2, 11, "b23");
+NexButton b24 = NexButton(2, 12, "b24");
+NexButton b25 = NexButton(2, 13, "b25");
+NexButton b26 = NexButton(3, 7, "b26");
+NexButton b27 = NexButton(3, 8, "b27");
+NexButton b28 = NexButton(3, 9, "b28");
+NexButton b29 = NexButton(3, 10, "b29");
+NexButton b30 = NexButton(3, 11, "b30");
+NexButton b31 = NexButton(3, 12, "b31");
+NexButton b32 = NexButton(3, 13, "b32");
+NexButton b33 = NexButton(3, 14, "b33");
+NexButton b34 = NexButton(3, 15, "b34");
+NexButton b35 = NexButton(3, 16, "b35");
+NexButton b36 = NexButton(3, 17, "b36");
+NexButton b37 = NexButton(3, 18, "b37");
+NexButton b38 = NexButton(3, 19, "b38");
+NexButton b40 = NexButton(2, 18, "b40");
+NexButton b42 = NexButton(4, 10, "b42");
+NexButton b43 = NexButton(2, 19, "b43");
+NexText t0 = NexText(0, 2, "t0");//
+NexText t1 = NexText(0, 5, "t1");//
+NexText t2 = NexText(0, 18, "t2");//
+NexText t3 = NexText(0, 19, "t3");//
+NexText t4 = NexText(0, 20, "t4");//
+NexText t21 = NexText(0, 2, "t21");
+NexText t22 = NexText(0, 1, "t22");
+NexText t5 = NexText(1, 7, "t5");//
+NexText t6 = NexText(1, 8, "t6");//
+NexText t7 = NexText(1, 9, "t7");//
+NexText t8 = NexText(1, 10, "t8");//
+NexText t11 = NexText(1, 1, "t11");
+NexText t12 = NexText(1, 2, "t12");
+NexText t25 = NexText(1, 13, "t25");
+NexText t9 = NexText(2, 14, "t9");//
+NexText t10 = NexText(2, 15, "t10");//
+NexText t16 = NexText(3, 20, "t16");
+NexText t17 = NexText(3, 1, "t17");
+NexText t18 = NexText(3, 2, "t18");
+NexText t13 = NexText(4, 6, "t13");
+NexText t14 = NexText(4, 7, "t14");
+NexText t15 = NexText(4, 9, "t15");
+NexText t19 = NexText(4, 14, "t19");
+NexText t20 = NexText(4, 1, "t20");
+NexText t29 = NexText(4, 2, "t29");
+NexSlider h0 = NexSlider(4, 4, "h0");
+NexSlider h1 = NexSlider(4, 5, "h1");
+NexSlider h2 = NexSlider(4, 8, "h2");
+NexRadio r0 = NexRadio(2, 16, "r0");
+NexRadio r1 = NexRadio(2, 17, "r1");
+
+char buffer[100] = {0};
+
+/*****Nextion display : Register a button object to the touch event list ***********/
+NexTouch *nex_listen_list[] = {&page0, &page1, &page2, &page3, &page4, &bt0, &bt1, &bt2, &bt3, &bt4, &bt5, &bt6, &bt7, &bt8, &bt9, &bt10, &b7, &b12, &b20, &b21, &b22, &b23, &b24, &b25, &b26, &b27, &b28, &b29, &b30, &b31, &b32, &b33, &b34, &b35, &b36, &b37, &b38, &b42, &b43, &h0, &h1, &h2, &r0, &r1,
+
+                               NULL};
+
+/*********************************************************************************************************
+**  Dobot Magician
+*******************************************************************************************************/
+#include "FlexiTimer2.h"
+#include "Protocol.h"
+#include "command.h"
+#include "stdio.h"
+
+//Set Serial TX&RX Buffer Size
+#define SERIAL_TX_BUFFER_SIZE 64
+#define SERIAL_RX_BUFFER_SIZE 256
+
+/*********************************************************************************************************
+** Global parameters Dobot Magician
+*********************************************************************************************************/
+EndEffectorParams gEndEffectorParams;
+
+JOGJointParams gJOGJointParams;
+JOGCoordinateParams gJOGCoordinateParams;
+JOGCommonParams gJOGCommonParams;
+JOGCmd gJOGCmd;
+
+PTPCoordinateParams gPTPCoordinateParams;
+PTPCommonParams gPTPCommonParams;
+PTPCmd gPTPCmd;
+
+uint64_t gQueuedCmdIndex;
+/********************************/
+
+Pixy2 pixy;
+
+//Page change event:
+void page0PushCallback(void *ptr)   
+{
+   CurrentPage = 0;  //Atur variable menjadi 0 sehingga Arduino mengetahui page 0 sedang ditampilkan 
+   refreshScreen = true;
+   Serial.println(F("Page 0"));
+}  
+
+//Page change event:
+void page1PushCallback(void *ptr)  
+{
+   CurrentPage = 1;  //Atur variable menjadi 1 sehingga Arduino mengetahui page 1 sedang ditampilkan
+   refreshScreen = true;
+   Serial.println(F("Page 1"));
+} 
+
+//Page change event:
+void page2PushCallback(void *ptr) 
+{
+   CurrentPage = 2;  //Atur variable menjadi 2 sehingga Arduino mengetahui page 2 sedang ditampilkan
+   refreshScreen = true;
+
+   if (endeffectorGripper == 1) {
+      Serial2.print("r0.val=");
+      Serial2.print(1);
+      Serial2.write(0xff);
+      Serial2.write(0xff);
+      Serial2.write(0xff);  
+      Serial2.print("r1.val=");
+      Serial2.print(0);
+      Serial2.write(0xff);
+      Serial2.write(0xff);
+      Serial2.write(0xff);  
+      Serial.println("refresh radio buttons (Gripper)");
+   } else {
+      Serial2.print("r0.val=");
+      Serial2.print(0);
+      Serial2.write(0xff);
+      Serial2.write(0xff);
+      Serial2.write(0xff);  
+      Serial2.print("r1.val=");
+      Serial2.print(1);
+      Serial2.write(0xff);
+      Serial2.write(0xff);
+      Serial2.write(0xff);  
+      Serial.println("refresh radio buttons (Vacuum Cup)");
+   }
+
+   Serial.println(F("Page 2"));
+}  
+
+void page3PushCallback(void *ptr)  
+{
+   CurrentPage = 3;  //Atur variable menjadi 3 sehingga Arduino mengetahui page 3 sedang ditampilkan
+   refreshScreen = true;
+
+   Serial.println(F("Page 3"));
+} 
+
+void page4PushCallback(void *ptr)  
+{
+   CurrentPage = 4;  //Atur variable menjadi 4 sehingga Arduino mengetahui page 4 sedang ditampilkan
+   refreshScreen = true;
+
+   Serial2.print("n0.val=");
+   Serial2.print(speedRatio);
+   Serial2.write(0xff);
+   Serial2.write(0xff);
+   Serial2.write(0xff);
+   Serial2.print("h0.val=");
+   Serial2.print(speedRatio);
+   Serial2.write(0xff);
+   Serial2.write(0xff);
+   Serial2.write(0xff);
+   Serial2.print("n1.val=");
+   Serial2.print(accelRatio);
+   Serial2.write(0xff);
+   Serial2.write(0xff);
+   Serial2.write(0xff);
+   Serial2.print("h1.val=");
+   Serial2.print(accelRatio);
+   Serial2.write(0xff);
+   Serial2.write(0xff);
+   Serial2.write(0xff);
+   Serial2.print("n2.val=");
+   Serial2.print(delayInterval);
+   Serial2.write(0xff);
+   Serial2.write(0xff);
+   Serial2.write(0xff);
+   Serial2.print("h2.val=");
+   Serial2.print(delayInterval);
+   Serial2.write(0xff);
+   Serial2.write(0xff);
+   Serial2.write(0xff);
+
+   Serial.println(F("Page 4"));
+
+   Serial.print(F("gPTPCommonParams.velocityRatio = "));
+   Serial.println(gPTPCommonParams.velocityRatio);
+   Serial.print(F("gPTPCommonParams.accelerationRatio = "));
+   Serial.println(gPTPCommonParams.accelerationRatio);
+   Serial.print(F("delayInterval = "));
+   Serial.println(delayInterval);
+
+}  
+
+void page5PushCallback(void *ptr) 
+{
+   CurrentPage = 5;  //Atur variable menjadi  sehingga Arduino mengetahui page 5 sedang ditampilkan
+   refreshScreen = true;
+   Serial.println(F("Page 5"));
+}  
+
+void bt0PopCallback(void *ptr) {
+   uint32_t dual_state;
+   NexDSButton *btn = (NexDSButton *)ptr;
+   dbSerialPrintln("bt0PopCallback");
+   dbSerialPrint("ptr=");
+   dbSerialPrintln((uint32_t)ptr);
+   memset(buffer, 0, sizeof(buffer));
+
+   /* Get the state value of dual state button component . */
+   bt0.getValue(&dual_state);
+   if (dual_state) {
+      moveArm(currentX, currentY, currentZ, currentR, true);
+   } else {
+      moveArm(currentX, currentY, currentZ, currentR, false);
+   }
+}
+
+void bt1PopCallback(void *ptr)  //X Axis
+{
+   uint32_t dual_state;
+   bt1.getValue(&dual_state);
+   if (dual_state) {
+      activeAxis = 1;
+   } else {
+   }
+}
+
+void bt2PopCallback(void *ptr)  //Y Axis
+{
+   uint32_t dual_state;
+   bt2.getValue(&dual_state);
+   if (dual_state) {
+      activeAxis = 2;
+   } else {
+   }
+}
+void bt3PopCallback(void *ptr)  //Z Axis
+{
+   uint32_t dual_state;
+   bt3.getValue(&dual_state);
+   if (dual_state) {
+      activeAxis = 3;
+   } else {
+   }
+}
+void bt4PopCallback(void *ptr)  //R Axis
+{
+   uint32_t dual_state;
+   bt4.getValue(&dual_state);
+   if (dual_state) {
+      activeAxis = 4;
+   } else {
+   }
+}
+
+void bt5PopCallback(void *ptr) 
+{
+   uint32_t dual_state;
+   bt5.getValue(&dual_state);
+   if (dual_state) {
+      moveInterval = 0.1;
+   } else {
+   }
+}
+void bt6PopCallback(void *ptr) 
+{
+   uint32_t dual_state;
+   bt6.getValue(&dual_state);
+   if (dual_state) {
+      moveInterval = 1.0;
+   } else {
+   }
+}
+
+void bt7PopCallback(void *ptr) 
+{
+   uint32_t dual_state;
+   bt7.getValue(&dual_state);
+   if (dual_state) {
+      moveInterval = 10;
+   } else {
+   }
+}
+void bt8PopCallback(void *ptr) 
+{
+   uint32_t dual_state;
+   bt8.getValue(&dual_state);
+   if (dual_state) {
+      moveInterval = 20;
+   } else {
+   }
+}
+
+void bt9PopCallback(void *ptr) //Mulai sistem pick and place otomatis
+{
+   uint32_t dual_state;
+   bt9.getValue(&dual_state);
+   if (dual_state) {
+      autoCycleOn = true;
+      currentMillis = millis;
+      previousMillis = currentMillis;
+      moveStep = 1;
+      Serial.println(F("Start Siklus Auto"));
+   } else {
+   }
+}
+void bt10PopCallback(void *ptr) 
+{
+   uint32_t dual_state;
+   bt10.getValue(&dual_state);
+   if (dual_state) {
+      autoCycleOn = false;
+      moveStep = 0;
+      Serial.println(F("Stop Skilus Auto"));
+   } else {
+   }
+}
+void b0PopCallback(void *ptr) 
+{
+   Serial.println(F("Jog"));
+   refreshScreen = true;
+}
+void b1PopCallback(void *ptr) 
+{
+   Serial.println(F("Auto"));
+   refreshScreen = true;
+}
+void b2PopCallback(void *ptr) 
+{
+   Serial.println(F("Settings"));
+   refreshScreen = true;
+}
+
+void b7PopCallback(void *ptr) 
+{
+   if (activeAxis == 1) moveArm((gPTPCmd.x += moveInterval), currentY, currentZ, currentR, currentVac);
+   if (activeAxis == 2) moveArm(currentX, (gPTPCmd.y += moveInterval), currentZ, currentR, currentVac);
+   if (activeAxis == 3) moveArm(currentX, currentY, (gPTPCmd.z += moveInterval), currentR, currentVac);
+   if (activeAxis == 4) moveArm(currentX, currentY, currentZ, (gPTPCmd.r += moveInterval), currentVac);
+   refreshScreen = true;
+}
+
+//Ketika tombol OFF dilepas LED akan mati
+
+void b12PopCallback(void *ptr) 
+{
+   if (activeAxis == 1) moveArm((gPTPCmd.x -= moveInterval), currentY, currentZ, currentR, currentVac);
+   if (activeAxis == 2) moveArm(currentX, (gPTPCmd.y -= moveInterval), currentZ, currentR, currentVac);
+   if (activeAxis == 3) moveArm(currentX, currentY, (gPTPCmd.z -= moveInterval), currentR, currentVac);
+   if (activeAxis == 4) moveArm(currentX, currentY, currentZ, (gPTPCmd.r -= moveInterval), currentVac);
+   refreshScreen = true;
+}
+void b20PopCallback(void *ptr) //Menyimpan posisi dimana kamera dapat melihat seluruh bidang (titik pada kertas kalibrasi)
+{
+   calXpos = gPTPCmd.x;
+   calYpos = gPTPCmd.y;
+   calZpos = gPTPCmd.z;
+   calRpos = gPTPCmd.r;
+
+   EEPROM.put(eeAddressCalXpos, calXpos);
+   EEPROM.get(eeAddressCalXpos, calXpos);
+   Serial.print(F("Kalibrasi posisi X disimpan di EEPROM: "));
+   Serial.println(calXpos);
+   EEPROM.put(eeAddressCalYpos, calYpos);
+   EEPROM.get(eeAddressCalYpos, calYpos);
+   Serial.print(F("Kalibrasi posisi Y disimpan di EEPROM: "));
+   Serial.println(calYpos);
+   EEPROM.put(eeAddressCalZpos, calZpos);
+   EEPROM.get(eeAddressCalZpos, calZpos);
+   Serial.print(F("Kalibrasi posisi Z disimpan di EEPROM: "));
+   Serial.println(calZpos);
+   EEPROM.put(eeAddressCalRpos, calRpos);
+   EEPROM.get(eeAddressCalRpos, calRpos);
+   Serial.print(F("Kalibrasi posisi R disimpan di EEPROM: "));
+   Serial.println(calRpos);
+   EEPROM.put(eeAddressCalPosAvailable, 999);  //Address 999 berarti posisi kalibrasi telah disimpan dan dapat digunakan etika Arduino dinyalakan
+   EEPROM.get(eeAddressCalPosAvailable, eePromIntVar);
+   Serial.print(F("Posisi kalibrasi tersimpan di EEPROM:"));
+   Serial.println(eePromIntVar);
+}
+
+void b21PopCallback(void *ptr) {
+   //Lengan robot menuju posisi dimana kamera dapat melihat seluruh bidang (kertas kalibrasi) 
+   moveArm(calXpos, calYpos, calZpos, currentR, currentVac);
+}
+void b22PopCallback(void *ptr) {
+   //Simpan posisi Start
+   EEPROM.put(eeAddressStartPosX, gPTPCmd.x);
+   EEPROM.put(eeAddressStartPosY, gPTPCmd.y);
+   EEPROM.put(eeAddressStartPosZ, gPTPCmd.z);
+   EEPROM.put(eeAddressStartPosR, gPTPCmd.r);
+   EEPROM.put(eeAddressStartPosAvailable, 999);
+   EEPROM.get(eeAddressStartPosX, startPosX);
+   Serial.print(F("Posisi Start X disimpan di EEPROM: "));
+   Serial.println(startPosX);
+   EEPROM.get(eeAddressStartPosY, startPosY);
+   Serial.print(F("Posisi Start Y disimpan di EEPROM: "));
+   Serial.println(startPosY);
+   EEPROM.get(eeAddressStartPosZ, startPosZ);
+   Serial.print(F("Posisi Start X disimpan di EEPROM: "));
+   Serial.println(startPosZ);
+   EEPROM.get(eeAddressStartPosR, startPosR);
+   Serial.print(F("Posisi Start R disimpan di EEPROM: "));
+   Serial.println(startPosR);
+}
+void b23PopCallback(void *ptr) {
+   //Lengan robot menuju posisi Start
+   moveArm(startPosX, startPosY, startPosZ, startPosR, currentVac);
+}
+void b24PopCallback(void *ptr) {
+   //Menyimpan posisi Z-down 
+   EEPROM.put(eeAddressZdown, gPTPCmd.z);
+   EEPROM.put(eeAddressZdownAvailable, 999);
+   EEPROM.get(eeAddressZdown, zDownPos);
+   Serial.print(F("Posisi Z-Down disimpan di EEPROM: "));
+   Serial.println(zDownPos);
+}
+void b25PopCallback(void *ptr) {
+   //Lengan robot menuju posisi Z-down 
+   moveArm(currentX, currentY, zDownPos, currentR, currentVac);
+}
+void b26PopCallback(void *ptr) {
+   //Menyimpan titik kalibrasi A (kiri bawah) 
+   EEPROM.put(eeAddressA2x, gPTPCmd.x);
+   EEPROM.put(eeAddressA2y, gPTPCmd.y);
+   EEPROM.put(eeAddressA2Available, 999);
+   EEPROM.get(eeAddressA2x, a2X);
+   Serial.print(F("Titik a2X disimpan di EEPROM: "));
+   Serial.println(a2X);
+   EEPROM.get(eeAddressA2y, a2Y);
+   Serial.print(F("Titik a2Y disimpan di EEPROM: "));
+   Serial.println(a2Y);
+}
+void b27PopCallback(void *ptr) {
+   //Lengan robot menuju titik kalibrasi A 
+   moveArm(a2X, a2Y, currentZ, currentR, currentVac);
+}
+void b28PopCallback(void *ptr) {
+   //Menyimpan titik kalibrasi B (kanan bawah)
+   EEPROM.put(eeAddressB2x, gPTPCmd.x);
+   EEPROM.put(eeAddressB2y, gPTPCmd.y);
+   EEPROM.put(eeAddressB2Available, 999);
+   EEPROM.get(eeAddressB2x, b2X);
+   Serial.print(F("Titik b2X disimpan di EEPROM: "));
+   Serial.println(b2X);
+   EEPROM.get(eeAddressB2y, b2Y);
+   Serial.print(F("Titik b2Y disimpan di EEPROM: "));
+   Serial.println(b2Y);
+}
+void b29PopCallback(void *ptr) {
+   //Lengan robot menuju titik kalibrasi B
+   moveArm(b2X, b2Y, currentZ, currentR, currentVac);
+}
+void b30PopCallback(void *ptr) {
+   //Menyimpan titik kalibrasi C (kiri atas)
+   EEPROM.put(eeAddressC2x, gPTPCmd.x);
+   EEPROM.put(eeAddressC2y, gPTPCmd.y);
+   EEPROM.put(eeAddressC2Available, 999);
+   EEPROM.get(eeAddressC2x, c2X);
+   Serial.print(F("Titik c2X disimpan di EEPROM: "));
+   Serial.println(c2X);
+   EEPROM.get(eeAddressC2y, c2Y);
+   Serial.print(F("Titik c2Y disimpan di EEPROM: "));
+   Serial.println(c2Y);
+}
+void b31PopCallback(void *ptr) {
+   //Lengan robot menuju titik kalibrasi C
+   moveArm(c2X, c2Y, currentZ, currentR, currentVac);
+}
+void b32PopCallback(void *ptr) {
+   //Menyimpan DropPos1 ke EEPROM
+   EEPROM.put(eeAddressDropLocation1X, gPTPCmd.x);
+   EEPROM.put(eeAddressDropLocation1Y, gPTPCmd.y);
+   EEPROM.put(eeAddressDropLocation1Z, gPTPCmd.z);
+   EEPROM.put(eeAddressDropLocation1R, gPTPCmd.r);
+   EEPROM.put(eeAddressDropLocation1Available, 999);
+   EEPROM.get(eeAddressDropLocation1X, dropLocation1X);
+   Serial.print(F("Drop location1 X disimpan di EEPROM: "));
+   Serial.println(startPosX);
+   EEPROM.get(eeAddressDropLocation1Y, dropLocation1Y);
+   Serial.print(F("Drop location1 Y disimpan di EEPROM: "));
+   Serial.println(startPosY);
+   EEPROM.get(eeAddressDropLocation1Z, dropLocation1Z);
+   Serial.print(F("Drop location1 Z disimpan di EEPROM: "));
+   Serial.println(startPosZ);
+   EEPROM.get(eeAddressDropLocation1R, dropLocation1R);
+   Serial.print(F("Drop location1 R disimpan di EEPROM: "));
+   Serial.println(startPosR);
+}
+void b33PopCallback(void *ptr) {
+   //Lengan robot menuju DropPos1
+   moveArm(dropLocation1X, dropLocation1Y, dropLocation1Z, dropLocation1R, currentVac);
+}
+void b34PopCallback(void *ptr) {
+   //Menyimpan DropPos2 ke EEPROM
+   EEPROM.put(eeAddressDropLocation2X, gPTPCmd.x);
+   EEPROM.put(eeAddressDropLocation2Y, gPTPCmd.y);
+   EEPROM.put(eeAddressDropLocation2Z, gPTPCmd.z);
+   EEPROM.put(eeAddressDropLocation2R, gPTPCmd.r);
+   EEPROM.put(eeAddressDropLocation2Available, 999);
+   EEPROM.get(eeAddressDropLocation2X, dropLocation2X);
+   Serial.print(F("Drop location2 X disimpan di EEPROM: "));
+   Serial.println(startPosX);
+   EEPROM.get(eeAddressDropLocation2Y, dropLocation2Y);
+   Serial.print(F("Drop location2 Y disimpan di EEPROM: "));
+   Serial.println(startPosY);
+   EEPROM.get(eeAddressDropLocation2Z, dropLocation2Z);
+   Serial.print(F("Drop location2 Z disimpan di EEPROM: "));
+   Serial.println(startPosZ);
+   EEPROM.get(eeAddressDropLocation2R, dropLocation2R);
+   Serial.print(F("Drop location2 R disimpan di EEPROM: "));
+   Serial.println(startPosR);
+}
+void b35PopCallback(void *ptr) {
+   //Lengan robot menuju DropPos2
+   moveArm(dropLocation2X, dropLocation2Y, dropLocation2Z, dropLocation2R, currentVac);
+}
+void b36PopCallback(void *ptr) {
+   //Menyimpan DropPos3 ke EEPROM
+   EEPROM.put(eeAddressDropLocation3X, gPTPCmd.x);
+   EEPROM.put(eeAddressDropLocation3Y, gPTPCmd.y);
+   EEPROM.put(eeAddressDropLocation3Z, gPTPCmd.z);
+   EEPROM.put(eeAddressDropLocation3R, gPTPCmd.r);
+   EEPROM.put(eeAddressDropLocation3Available, 999);
+   EEPROM.get(eeAddressDropLocation3X, dropLocation3X);
+   Serial.print(F("Drop location3 X disimpan di EEPROM: "));
+   Serial.println(startPosX);
+   EEPROM.get(eeAddressDropLocation3Y, dropLocation3Y);
+   Serial.print(F("Drop location3 Y disimpan di EEPROM: "));
+   Serial.println(startPosY);
+   EEPROM.get(eeAddressDropLocation3Z, dropLocation3Z);
+   Serial.print(F("Drop location3 Z disimpan di EEPROM: "));
+   Serial.println(startPosZ);
+   EEPROM.get(eeAddressDropLocation3R, dropLocation3R);
+   Serial.print(F("Drop location3 R disimpan di EEPROM: "));
+   Serial.println(startPosR);
+}
+void b37PopCallback(void *ptr) {
+   //Lengan robot menuju DropPos3
+   moveArm(dropLocation3X, dropLocation3Y, dropLocation3Z, dropLocation3R, currentVac);
+}
+void b38PopCallback(void *ptr) {
+   //Tahap kalibrasi. Pada tahap ini, kamera akan menangkap 3 titik kalibrasi dan disimpan ke EEPROM. Prosedur ini akan gagal apabila jumlah titik kalibrasi tidak sama dengan 3
+
+   static int i;
+   static int j = 0;
+   static int k = 0;             
+   static int CalibDotFound = 0;  //Jumlah titik kalibrasi yang ditemukan
+
+   pixy.ccc.getBlocks();
+
+   CalibDotFound = 0;
+   Serial.print(F("pixy.ccc.numBlocks = "));
+   Serial.println(pixy.ccc.numBlocks);
+   for (i = 0; i < pixy.ccc.numBlocks; i++) {
+      if (pixy.ccc.blocks[i].m_signature == signatureCalib) {
+         CalibDotFound++;
+      }                           
+      pixy.ccc.blocks[i].print();  
+   }
+   
+   if (CalibDotFound == 3) {
+      Serial.print(F("Detected "));
+      Serial.println(pixy.ccc.numBlocks);
+      for (i = 0; i < pixy.ccc.numBlocks; i++) {
+         Serial.print(F("  block "));
+         Serial.print(i);
+         Serial.print(F(": "));
+         pixy.ccc.blocks[i].print();
+      }
+      //Array untuk menyortir objek dari nilai kecil ke besar
+      //Nilai terkecil merupakan titik koordinat C (kiri atas), tengah merupakan titik koordinat A (kiri bawah), dan tertinggi merupakan titik koordinat B (kanan bawah)
+      for (j = 0; j < pixy.ccc.numBlocks; j++) {
+         for (k = 0; k < (pixy.ccc.numBlocks - 1); k++) {
+            if ((pixy.ccc.blocks[k].m_x + pixy.ccc.blocks[k].m_y) > (pixy.ccc.blocks[k + 1].m_x + pixy.ccc.blocks[k + 1].m_y)) {
+               tempFloatVarX = pixy.ccc.blocks[k].m_x;
+               tempFloatVarY = pixy.ccc.blocks[k].m_y;
+               tempIntVarSignature = pixy.ccc.blocks[k].m_signature;
+               pixy.ccc.blocks[k].m_x = pixy.ccc.blocks[k + 1].m_x;
+               pixy.ccc.blocks[k].m_y = pixy.ccc.blocks[k + 1].m_y;
+               pixy.ccc.blocks[k].m_signature = pixy.ccc.blocks[k + 1].m_signature;
+               pixy.ccc.blocks[k + 1].m_x = tempFloatVarX;
+               pixy.ccc.blocks[k + 1].m_y = tempFloatVarY;
+               pixy.ccc.blocks[k + 1].m_signature = tempIntVarSignature;
+            }
+         }
+      }
+
+      k = 0;
+      for (j = 0; j < pixy.ccc.numBlocks; j++) {
+         Serial.print(pixy.ccc.blocks[j].m_signature);
+         if (pixy.ccc.blocks[j].m_signature == signatureCalib) {
+            //Titik kalibrasi A ditetapkan sebagai koordinat kiri bawah, yang memiliki nilai tengah dari penjumlahan koordinat X dan Y miliknya. Oleh karena itu, titik A berada pada posisi ke-2 di dalam array
+            if (k == 1) {
+               a1X = pixy.ccc.blocks[j].m_x;
+            }
+            if (k == 1) {
+               a1Y = (207 - pixy.ccc.blocks[j].m_y); //Membalikkan koordinat Y dari Pixy2 dengan cara menguranginya dari sumbu Y maksimum pada Pixy2 (207)
+            } 
+            //Titik kalibrasi B ditetapkan sebagai koordinat kiri bawah, yang memiliki nilai terbesar dari penjumlahan koordinat X dan Y miliknya. Oleh karena itu, titik A berada pada posisi ke-3 di dalam array
+            if (k == 2) {
+               b1X = pixy.ccc.blocks[j].m_x;
+            }
+            if (k == 2) {
+               b1Y = (207 - pixy.ccc.blocks[j].m_y);
+            }  
+            //Titik kalibrasi C ditetapkan sebagai koordinat kiri bawah, yang memiliki nilai terkecil dari penjumlahan koordinat X dan Y miliknya. Oleh karena itu, titik A berada pada posisi ke-1 di dalam array
+            if (k == 0) {
+               c1X = pixy.ccc.blocks[j].m_x;
+            }
+            if (k == 0) {
+               c1Y = (207 - pixy.ccc.blocks[j].m_y);
+            }
+            k++;
+         }
+      }
+
+      Serial.println(F(" "));
+      Serial.println(F("3 titik kalibrasi ditemukan:"));
+
+      EEPROM.put(eeAddressA1x, a1X);
+      EEPROM.put(eeAddressA1y, a1Y);
+      EEPROM.put(eeAddressA1Available, 999);
+      EEPROM.get(eeAddressA1x, a1X);
+      Serial.print(F("Titik a1X disimpan di EEPROM: "));
+      Serial.println(a1X);
+      EEPROM.get(eeAddressA1y, a1Y);
+      Serial.print(F("Titik a1Y disimpan di EEPROM: "));
+      Serial.println(a1Y);
+
+      EEPROM.put(eeAddressB1x, b1X);
+      EEPROM.put(eeAddressB1y, b1Y);
+      EEPROM.put(eeAddressB1Available, 999);
+      EEPROM.get(eeAddressB1x, b1X);
+      Serial.print(F("Titik b1X disimpan di EEPROM: "));
+      Serial.println(b1X);
+      EEPROM.get(eeAddressB1y, b1Y);
+      Serial.print(F("Titik b1Y disimpan di EEPROM: "));
+      Serial.println(b1Y);
+
+      EEPROM.put(eeAddressC1x, c1X);
+      EEPROM.put(eeAddressC1y, c1Y);
+      EEPROM.put(eeAddressC1Available, 999);
+      EEPROM.get(eeAddressC1x, c1X);
+      Serial.print(F("Titik c1X disimpan di EEPROM: "));
+      Serial.println(c1X);
+      EEPROM.get(eeAddressC1y, c1Y);
+      Serial.print(F("Titik c1Y disimpan di EEPROM: "));
+      Serial.println(c1Y);
+
+   } else {
+      Serial.println(" ");
+      Serial.print("Error: jumlah titik kalibrasi yang ditemukan salah (3 required, found: ");
+      Serial.println(CalibDotFound);
+      Serial.println("Kalibrasi gagal");
+   }
+}
+
+void b42PopCallback(void *ptr) {
+   //Menyimpan pengaturan untuk speed ratio, acceleration ratio, dan delah ke EEPROMM
+
+   EEPROM.put(eeAddressSpeedRatio, speedRatio);    //Menyimpan di EEPROM
+   EEPROM.put(eeAddressSpeedRatioAvailable, 999);  //Mengatur address menjadi 999 untuk memberitahu nilai telah diatur pada EEPROM sebelumnya 
+   EEPROM.get(eeAddressSpeedRatio, speedRatio);    //Membaca dari EEPROM untuk memastikan apakah data yang dibaca sesuai dengan data yang ditulis     Serial.print(F("SpeedRatio disimpan di EEPROM: "));
+   Serial.println(speedRatio);
+
+   EEPROM.put(eeAddressAccelRatio, accelRatio);   
+   EEPROM.put(eeAddressAccelRatioAvailable, 999); 
+   EEPROM.get(eeAddressAccelRatio, accelRatio);    
+   Serial.print(F("AccelerationRatio disimpan di EEPROM: "));
+   Serial.println(accelRatio);
+
+   EEPROM.put(eeAddressDelay, delayInterval);  
+   EEPROM.put(eeAddressDelayAvailable, 999);   
+   EEPROM.get(eeAddressDelay, delayInterval);  
+   Serial.print(F("DelayInterval disimpan di EEPROM: "));
+   Serial.println(delayInterval);
+}
+
+void b43PopCallback(void *ptr) {
+   //Reset Arduino
+   Serial.println(F("b43PopCallback: reboot Arduino"));
+   wdt_disable();
+   wdt_enable(WDTO_250MS);  //Mengatur timer watchdog ke interval waktu yang singkat. Hal ini akan menyebabkan timer tersebut expire dengan cepat dan memicu restart pada Arduino.
+   delay(1000);            
+}
+
+void h0PopCallback(void *ptr)   //Release event untuk slider SpeedRatio
+{
+   Serial.println(F("h0PopCallback"));
+   h0.getValue(&speedRatio);
+   gPTPCommonParams.velocityRatio = speedRatio;
+   Serial.print(F("gPTPCommonParams.velocityRatio = "));
+   Serial.println(gPTPCommonParams.velocityRatio);
+   Serial2.print("n0.val=");   //Informasi ini dikirim ke layar Nextion untuk menentukan nama objek dan atribut yang akan diubah
+   Serial2.print(speedRatio);  //Ini adalah nilai yang ingin dikirim ke objek dan atribut yang disebutkan sebelumnya
+   Serial2.write(0xff);       
+   Serial2.write(0xff);
+   Serial2.write(0xff);
+   SetPTPCommonParams(&gPTPCommonParams, true, &gQueuedCmdIndex);
+}
+
+void h1PopCallback(void *ptr)  //Release event untuk slider AccelerationRatio
+{
+   Serial.println(F("h1PopCallback"));
+   h1.getValue(&accelRatio);
+   gPTPCommonParams.accelerationRatio = accelRatio;
+   Serial.print(F("gPTPCommonParams.accelerationRatio = "));
+   Serial.println(gPTPCommonParams.accelerationRatio);
+   Serial2.print("n1.val=");   
+   Serial2.print(accelRatio);  
+   Serial2.write(0xff);      
+   Serial2.write(0xff);
+   Serial2.write(0xff);
+   SetPTPCommonParams(&gPTPCommonParams, true, &gQueuedCmdIndex);
+}
+
+void h2PopCallback(void *ptr)  //Release event untuk slider delayInterval 
+{
+   Serial.println(F("h2PopCallback"));
+   h2.getValue(&delayInterval);
+   Serial.print(F("delayInterval = "));
+   Serial.println(delayInterval);
+   Serial2.print("n2.val=");      
+   Serial2.print(delayInterval);  
+   Serial2.write(0xff);           
+   Serial2.write(0xff);
+   Serial2.write(0xff);
+}
+
+void r0PushCallback(void *ptr)  //Press event untuk pemilihan end-effector
+{
+   endeffectorGripper = 1;
+   EEPROM.put(eeAddressEndeffector, endeffectorGripper);
+   EEPROM.put(eeAddressEndefectorAvailable, 999);
+   EEPROM.get(eeAddressEndeffector, endeffectorGripper);
+   Serial.print("Jenis end-effector disimpan di EEPROM: ");
+   Serial.print(endeffectorGripper);
+   Serial.println("(Gripper)");
+}  
+
+void r1PushCallback(void *ptr)  // Press event untuk pemilihan end-effector
+{
+   endeffectorGripper = 0;
+   EEPROM.put(eeAddressEndeffector, endeffectorGripper);
+   EEPROM.put(eeAddressEndefectorAvailable, 999);
+   EEPROM.get(eeAddressEndeffector, endeffectorGripper);
+   Serial.print("Jenis end-effector disimpan di EEPROM: ");
+   Serial.print(endeffectorGripper);
+   Serial.println("(Vacuum Cup)");
+}  
+
+//**************end Nextion popcallback functions************
+
+void setup() {
+   pinMode(led, OUTPUT);
+   digitalWrite(led, LOW);
+
+   // **** setup miscellaneous **********************************
+   Serial.begin(9600);     //Arduino debugging port
+   delay(500);             //Give serial ports time to initialize before using them
+   Serial1.begin(115200);  //Pins 18 and 19 on Arduino Mega board (attach Dobot Magician)
+   delay(500);             //Give serial ports time to initialize before using them
+   Serial2.begin(115200);  //Pins 16 and 17 on Arduino Mega board (attach Nextion Display)
+   delay(500);             //Give serial ports time to initialize before using them
+   printf_begin();
+   //Timer Interrupt
+   FlexiTimer2::set(100, Serialread);
+   FlexiTimer2::start();
+
+   nexInit();  //Initialize Nextion
+
+   //Nextion Display: Register the pop event callback function of the components
+   page0.attachPush(page0PushCallback);  //Page press event
+   page1.attachPush(page1PushCallback);  //Page press event
+   page2.attachPush(page2PushCallback);  //Page press event
+   page3.attachPush(page3PushCallback);  //Page press event
+   page4.attachPush(page4PushCallback);  //Page press event
+   bt0.attachPop(bt0PopCallback, &bt0);
+   bt1.attachPop(bt1PopCallback, &bt1);
+   bt2.attachPop(bt2PopCallback, &bt2);
+   bt3.attachPop(bt3PopCallback, &bt3);
+   bt4.attachPop(bt4PopCallback, &bt4);
+   bt5.attachPop(bt5PopCallback, &bt5);
+   bt6.attachPop(bt6PopCallback, &bt6);
+   bt7.attachPop(bt7PopCallback, &bt7);
+   bt8.attachPop(bt8PopCallback, &bt8);
+   bt9.attachPop(bt9PopCallback, &bt9);
+   bt10.attachPop(bt10PopCallback, &bt10);
+   b0.attachPop(b0PopCallback, &b0);
+   b2.attachPop(b1PopCallback, &b1);
+   b2.attachPop(b2PopCallback, &b2);
+   b7.attachPop(b7PopCallback, &b7);
+   b12.attachPop(b12PopCallback, &b12);
+   b20.attachPop(b20PopCallback, &b20);
+   b21.attachPop(b21PopCallback, &b21);
+   b22.attachPop(b22PopCallback, &b22);
+   b23.attachPop(b23PopCallback, &b23);
+   b24.attachPop(b24PopCallback, &b24);
+   b25.attachPop(b25PopCallback, &b25);
+   b26.attachPop(b26PopCallback, &b26);
+   b27.attachPop(b27PopCallback, &b27);
+   b28.attachPop(b28PopCallback, &b28);
+   b29.attachPop(b29PopCallback, &b29);
+   b30.attachPop(b30PopCallback, &b30);
+   b31.attachPop(b31PopCallback, &b31);
+   b32.attachPop(b32PopCallback, &b32);
+   b33.attachPop(b33PopCallback, &b33);
+   b34.attachPop(b34PopCallback, &b34);
+   b35.attachPop(b35PopCallback, &b35);
+   b36.attachPop(b36PopCallback, &b36);
+   b37.attachPop(b37PopCallback, &b37);
+   b38.attachPop(b38PopCallback, &b38);
+   b42.attachPop(b42PopCallback, &b42);
+   b43.attachPop(b43PopCallback, &b43);
+   h0.attachPop(h0PopCallback);    //Speed slider
+   h1.attachPop(h1PopCallback);    //Acceleration slider
+   h2.attachPop(h2PopCallback);    //Delay timer slider
+   r0.attachPush(r0PushCallback);  //Checkbox Gripper Press
+   r1.attachPush(r1PushCallback);  //Checkbox Vacuum Cup Press
+
+   Serial.println(F(" "));
+   Serial.println(F("|---------------->Start_up sequence, baca pengaturan dari EEPROM Arduino<----------------|"));
+   Serial.println(F(" "));
+   // ********************* EEPROM load data ******************************************************
+   //Pada bagian ini data yang disimpan akan diambil dari EEPROM apabila tersedia. Apabila data tidak ada, tidak akan ada yang dilakukan dan nilai default akan digunakan
+
+   EEPROM.get(eeAddressStartPosAvailable, eePromIntVar);
+   if (eePromIntVar != 999) {
+      startPosX = 200.00;
+      startPosY = 0.00;
+      startPosZ = 0.00;
+      startPosR = 0.00;
+      Serial.println(F("Start position TIDAK disimpan sebelumnya, menggunakan nilai default:"));
+      Serial.print(F(" X"));
+      Serial.print(startPosX);
+      Serial.print(F(" Y"));
+      Serial.print(startPosY);
+      Serial.print(F(" Z"));
+      Serial.print(startPosZ);
+      Serial.print(F(" R"));
+      Serial.println(startPosR);
+   }
+   if (eePromIntVar == 999) {
+      EEPROM.get(eeAddressStartPosX, startPosX);
+      EEPROM.get(eeAddressStartPosY, startPosY);
+      EEPROM.get(eeAddressStartPosZ, startPosZ);
+      EEPROM.get(eeAddressStartPosR, startPosR);
+      Serial.print(F("Start posisi membaca dari EEPROM: X"));
+      Serial.print(startPosX);
+      Serial.print(F(" Y"));
+      Serial.print(startPosY);
+      Serial.print(F(" Z"));
+      Serial.print(startPosZ);
+      Serial.print(F(" R"));
+      Serial.println(startPosR);
+   }
+
+   EEPROM.get(eeAddressCalPosAvailable, eePromIntVar);
+   if (eePromIntVar != 999) {
+      calXpos = 200.00;
+      calYpos = -45.00;
+      calZpos = 160.00;
+      calRpos = 0.00;
+      Serial.println("Calibration position TIDAK disimpan sebelumnya, menggunakan nilai default:");
+      Serial.print(F(" X"));
+      Serial.print(calXpos);
+      Serial.print(F(" Y"));
+      Serial.print(calYpos);
+      Serial.print(F(" Z"));
+      Serial.print(calZpos);
+      Serial.print(F(" R"));
+      Serial.println(calRpos);
+   }
+   if (eePromIntVar == 999) {
+      EEPROM.get(eeAddressCalXpos, calXpos);
+      EEPROM.get(eeAddressCalYpos, calYpos);
+      EEPROM.get(eeAddressCalZpos, calZpos);
+      EEPROM.get(eeAddressCalRpos, calRpos);
+      Serial.print(F("Posisi kalibrasi membaca dari EEPROM: X"));
+      Serial.print(calXpos);
+      Serial.print(F(" Y"));
+      Serial.print(calYpos);
+      Serial.print(F(" Z"));
+      Serial.print(calZpos);
+      Serial.print(F(" R"));
+      Serial.println(calRpos);
+   }
+
+   EEPROM.get(eeAddressA1Available, eePromIntVar);
+   if (eePromIntVar != 999) {
+      a1X = 0.00;
+      a1Y = 0.00;
+      Serial.println(F("Posisi titik kalibrasi A1 TIDAK disimpan sebelumnya, menggunakan nilai default:"));
+      Serial.print(F(" X"));
+      Serial.print(a1X);
+      Serial.print(F(" Y"));
+      Serial.print(a1Y);
+   }
+   if (eePromIntVar == 999) {
+      EEPROM.get(eeAddressA1x, a1X);
+      EEPROM.get(eeAddressA1y, a1Y);
+      Serial.print(F("A1 Calibration position membaca dari EEPROM: X"));
+      Serial.print(a1X);
+      Serial.print(" Y");
+      Serial.println(a1Y);
+   }
+
+   EEPROM.get(eeAddressB1Available, eePromIntVar);  //
+   if (eePromIntVar != 999) {
+      b1X = 0.00;
+      b1Y = 0.00;
+      Serial.println(F("Posisi titik kalibrasi B1 TIDAK disimpan sebelumnya, menggunakan nilai default:"));
+      Serial.print(F(" X"));
+      Serial.print(b1X);
+      Serial.print(F(" Y"));
+      Serial.print(b1Y);
+   }
+   if (eePromIntVar == 999) {
+      EEPROM.get(eeAddressB1x, b1X);
+      EEPROM.get(eeAddressB1y, b1Y);
+      Serial.print(F("B1 Calibration position membaca dari EEPROM: X"));
+      Serial.print(b1X);
+      Serial.print(" Y");
+      Serial.println(b1Y);
+   }
+
+   EEPROM.get(eeAddressC1Available, eePromIntVar);
+   if (eePromIntVar != 999) {
+      c1X = 0.00;
+      c1Y = 0.00;
+      Serial.println(F("Posisi titik kalibrasi C1 TIDAK disimpan sebelumnya, menggunakan nilai default:"));
+      Serial.print(F(" X"));
+      Serial.print(c1X);
+      Serial.print(F(" Y"));
+      Serial.print(c1Y);
+   }
+   if (eePromIntVar == 999) {
+      EEPROM.get(eeAddressC1x, c1X);
+      EEPROM.get(eeAddressC1y, c1Y);
+      Serial.print(F("C1 Calibration position membaca dari EEPROM: X"));
+      Serial.print(c1X);
+      Serial.print(" Y");
+      Serial.println(c1Y);
+   }
+
+   EEPROM.get(eeAddressA2Available, eePromIntVar);
+   if (eePromIntVar != 999) {
+      a2X = 200.00;
+      a2Y = -50;
+      Serial.println(F("Posisi titik kalibrasi A2 TIDAK disimpan sebelumnya, menggunakan nilai default:"));
+      Serial.print(F(" X"));
+      Serial.print(a2X);
+      Serial.print(F(" Y"));
+      Serial.print(a2Y);
+   }
+   if (eePromIntVar == 999) {
+      EEPROM.get(eeAddressA2x, a2X);
+      EEPROM.get(eeAddressA2y, a2Y);
+      Serial.print(F("A2 Calibration position membaca dari EEPROM: X"));
+      Serial.print(a2X);
+      Serial.print(" Y");
+      Serial.println(a2Y);
+   }
+
+   EEPROM.get(eeAddressB2Available, eePromIntVar);  
+   if (eePromIntVar != 999) {
+      b2X = 200.00;
+      b2Y = 50;
+      Serial.println("Posisi titik kalibrasi B2 TIDAK disimpan sebelumnya, menggunakan nilai default:");
+      Serial.print(" X");
+      Serial.print(b2X);
+      Serial.print(" Y");
+      Serial.print(b2Y);
+   }
+   if (eePromIntVar == 999) {
+      EEPROM.get(eeAddressB2x, b2X);
+      EEPROM.get(eeAddressB2y, b2Y);
+      Serial.print(F("B2 Calibration position membaca dari EEPROM: X"));
+      Serial.print(b2X);
+      Serial.print(" Y");
+      Serial.println(b2Y);
+   }
+
+   EEPROM.get(eeAddressC2Available, eePromIntVar);
+   if (eePromIntVar != 999) {
+      c2X = 250.00;
+      c2Y = -50;
+      Serial.println("Posisi titik kalibrasi C2 TIDAK disimpan sebelumnya, menggunakan nilai default:");
+      Serial.print(" X");
+      Serial.print(c2X);
+      Serial.print(" Y");
+      Serial.print(c2Y);
+   }
+   if (eePromIntVar == 999) {
+      EEPROM.get(eeAddressC2x, c2X);
+      EEPROM.get(eeAddressC2y, c2Y);
+      Serial.print(F("C2 Calibration position memmembaca dari EEPROM: X"));
+      Serial.print(c2X);
+      Serial.print(" Y");
+      Serial.println(c2Y);
+   }
+
+   EEPROM.get(eeAddressZdownAvailable, eePromIntVar);
+   if (eePromIntVar != 999) {
+      zDownPos = 0.00;
+      Serial.print(F("Posisi titik kalibrasi Z-Down TIDAK disimpan sebelumnya, menggunakan nilai default:"));
+      Serial.print(F(" Z"));
+      Serial.println(zDownPos);
+   }
+   if (eePromIntVar == 999) {
+      EEPROM.get(eeAddressZdown, zDownPos);
+      Serial.print(F("Z-Down position membaca dari EEPROM: Z"));
+      Serial.println(zDownPos);
+   }
+
+   EEPROM.get(eeAddressDropLocation1Available, eePromIntVar);
+   if (eePromIntVar != 999) {
+      dropLocation1X = 220.00;
+      dropLocation1Y = 120.00;
+      dropLocation1Z = 50.00;
+      dropLocation1R = 0.00;
+      Serial.println(F("Drop position 1 TIDAK disimpan sebelumnya, menggunakan nilai default:"));
+      Serial.print(F(" X"));
+      Serial.print(dropLocation1X);
+      Serial.print(F(" Y"));
+      Serial.print(dropLocation1Y);
+      Serial.print(F(" Z"));
+      Serial.print(dropLocation1Z);
+      Serial.print(F(" R"));
+      Serial.println(dropLocation1R);
+   }
+   if (eePromIntVar == 999) {
+      EEPROM.get(eeAddressDropLocation1X, dropLocation1X);
+      EEPROM.get(eeAddressDropLocation1Y, dropLocation1Y);
+      EEPROM.get(eeAddressDropLocation1Z, dropLocation1Z);
+      EEPROM.get(eeAddressDropLocation1R, dropLocation1R);
+      Serial.print(F("Drop location 1 membaca dari EEPROM: X"));
+      Serial.print(dropLocation1X);
+      Serial.print(F(" Y"));
+      Serial.print(dropLocation1Y);
+      Serial.print(F(" Z"));
+      Serial.print(dropLocation1Z);
+      Serial.print(F(" R"));
+      Serial.println(dropLocation1R);
+   }
+
+   EEPROM.get(eeAddressDropLocation2Available, eePromIntVar);
+   if (eePromIntVar != 999) {
+      dropLocation2X = 200.00;
+      dropLocation2Y = 0.00;
+      dropLocation2Z = 0.00;
+      dropLocation2R = 0.00;
+      Serial.println(F("Drop position 2 TIDAK disimpan sebelumnya, menggunakan nilai default:"));
+      Serial.print(F(" X"));
+      Serial.print(dropLocation2X);
+      Serial.print(F(" Y"));
+      Serial.print(dropLocation2Y);
+      Serial.print(F(" Z"));
+      Serial.print(dropLocation2Z);
+      Serial.print(F(" R"));
+      Serial.println(dropLocation2R);
+   }
+   if (eePromIntVar == 999) {
+      EEPROM.get(eeAddressDropLocation2X, dropLocation2X);
+      EEPROM.get(eeAddressDropLocation2Y, dropLocation2Y);
+      EEPROM.get(eeAddressDropLocation2Z, dropLocation2Z);
+      EEPROM.get(eeAddressDropLocation2R, dropLocation2R);
+      Serial.print(F("Drop location 2 membaca dari EEPROM: X"));
+      Serial.print(dropLocation2X);
+      Serial.print(F(" Y"));
+      Serial.print(dropLocation2Y);
+      Serial.print(F(" Z"));
+      Serial.print(dropLocation2Z);
+      Serial.print(F(" R"));
+      Serial.println(dropLocation2R);
+   }
+
+   EEPROM.get(eeAddressDropLocation3Available, eePromIntVar);
+   if (eePromIntVar != 999) {
+      dropLocation3X = 200.00;
+      dropLocation3Y = 0.00;
+      dropLocation3Z = 0.00;
+      dropLocation3R = 0.00;
+      Serial.println(F("Drop position 3 TIDAK disimpan sebelumnya, menggunakan nilai default:"));
+      Serial.print(F(" X"));
+      Serial.print(dropLocation3X);
+      Serial.print(F(" Y"));
+      Serial.print(dropLocation3Y);
+      Serial.print(F(" Z"));
+      Serial.print(dropLocation3Z);
+      Serial.print(F(" R"));
+      Serial.println(dropLocation3R);
+   }
+   if (eePromIntVar == 999) {
+      EEPROM.get(eeAddressDropLocation3X, dropLocation3X);
+      EEPROM.get(eeAddressDropLocation3Y, dropLocation3Y);
+      EEPROM.get(eeAddressDropLocation3Z, dropLocation3Z);
+      EEPROM.get(eeAddressDropLocation3R, dropLocation3R);
+      Serial.print(F("Drop location 3 membaca dari EEPROM: X"));
+      Serial.print(dropLocation3X);
+      Serial.print(F(" Y"));
+      Serial.print(dropLocation3Y);
+      Serial.print(F(" Z"));
+      Serial.print(dropLocation3Z);
+      Serial.print(F(" R"));
+      Serial.println(dropLocation3R);
+   }
+
+   EEPROM.get(eeAddressEndefectorAvailable, eePromIntVar);
+   if (eePromIntVar != 999) {
+      endeffectorGripper = 0;
+      Serial.println(F("Jenis end-effector TIDAK disimpan sebelumnya, menggunakan jenis default: Vacuum Cup"));
+   }
+   if (eePromIntVar == 999) {
+      EEPROM.get(eeAddressEndeffector, endeffectorGripper);
+      Serial.print(F("End effector type membaca dari EEPROM: "));
+      if (endeffectorGripper == 1) {
+         Serial.println(F("Gripper"));
+      } else
+         Serial.println(F("Vacuum Cup"));
+   }
+
+
+   EEPROM.get(eeAddressSpeedRatioAvailable, eePromIntVar);
+   if (eePromIntVar != 999) {
+      speedRatio = 50;
+      Serial.print(F("speedRatioTIDAK disimpan sebelumnya, menggunakan nilai default: "));
+      Serial.println(speedRatio);
+   }
+   if (eePromIntVar == 999) {
+      EEPROM.get(eeAddressSpeedRatio, speedRatio);
+      Serial.print(F("speedRatio membaca dari EEPROM: "));
+      Serial.println(speedRatio);
+   }
+
+   EEPROM.get(eeAddressAccelRatioAvailable, eePromIntVar);
+   if (eePromIntVar != 999) {
+      accelRatio = 50;
+      Serial.print(F("accelRatio TIDAK disimpan sebelumnya, menggunakan nilai default: "));
+      Serial.println(accelRatio);
+   }
+   if (eePromIntVar == 999) {
+      EEPROM.get(eeAddressAccelRatio, accelRatio);
+      Serial.print(F("accelRatio membaca dari EEPROM: "));
+      Serial.println(accelRatio);
+   }
+
+   EEPROM.get(eeAddressDelayAvailable, eePromIntVar);
+   if (eePromIntVar != 999) {
+      delayInterval = 1500;
+      Serial.print(F("delayInterval TIDAK disimpan sebelumnya, menggunakan nilai default: "));
+      Serial.println(delayInterval);
+   }
+   if (eePromIntVar == 999) {
+      EEPROM.get(eeAddressDelay, delayInterval);
+      Serial.print(F("delayInterval membaca dari EEPROM: "));
+      Serial.println(delayInterval);
+   }
+
+   // ***************** Akhir bagian pemuatan data EEPROM *******************************************
+
+   // **** initialize PIXY camera *******************************
+   Serial.println("pixy2.initialize");
+   pixy.init();
+   // **** setup arduino pins ***********************************
+
+   Serial2.print("bt1.val=");  //Mengatur keadaan awal tombol X 
+   Serial2.print(1);        
+   Serial2.write(0xff);      
+   Serial2.write(0xff);
+   Serial2.write(0xff);
+   //Matikan tombol sumbu lain
+   Serial2.print("bt2.val=");
+   Serial2.print(0);
+   Serial2.write(0xff);
+   Serial2.write(0xff);
+   Serial2.write(0xff);
+   Serial2.print("bt3.val=");
+   Serial2.print(0);
+   Serial2.write(0xff);
+   Serial2.write(0xff);
+   Serial2.write(0xff);
+   Serial2.print("bt4.val=");
+   Serial2.print(0);
+   Serial2.write(0xff);
+   Serial2.write(0xff);
+   Serial2.write(0xff);
+
+   Serial2.print("bt6.val=");  // Mengatur keadaan awal tombol increment 1
+   Serial2.print(1);           
+   Serial2.write(0xff);       
+   Serial2.write(0xff);
+   Serial2.write(0xff);
+   //Matikan tombol increment lain
+   Serial2.print("bt5.val=");
+   Serial2.print(0);
+   Serial2.write(0xff);
+   Serial2.write(0xff);
+   Serial2.write(0xff);
+   Serial2.print("bt7.val=");
+   Serial2.print(0);
+   Serial2.write(0xff);
+   Serial2.write(0xff);
+   Serial2.write(0xff);
+   Serial2.print("bt8.val=");
+   Serial2.print(0);
+   Serial2.write(0xff);
+   Serial2.write(0xff);
+   Serial2.write(0xff);
+}
+
+/*********************************************************************************************************
+** Function name:       Serialread
+** Descriptions:        import data to rxbuffer
+** Input parametersnone:
+** Output parameters:
+** Returned value:
+*********************************************************************************************************/
+void Serialread() {
+   while (Serial1.available()) {
+      uint8_t data = Serial1.read();
+      if (RingBufferIsFull(&gSerialProtocolHandler.rxRawByteQueue) == false) {
+         RingBufferEnqueue(&gSerialProtocolHandler.rxRawByteQueue, &data);
+      }
+   }
+}
+
+/*********************************************************************************************************
+** Function name:       Serial_putc
+** Descriptions:        Remap Serial to Printf
+** Input parametersnone:
+** Output parameters:
+** Returned value:
+*********************************************************************************************************/
+int Serial_putc(char c, struct __file *) {
+   Serial.write(c);
+   return c;
+}
+
+/*********************************************************************************************************
+** Function name:       printf_begin
+** Descriptions:        Initializes Printf
+** Input parameters:
+** Output parameters:
+** Returned value:
+*********************************************************************************************************/
+
+void printf_begin(void) { fdevopen(&Serial_putc, 0); }
+
+/*********************************************************************************************************
+** Function name:       InitRAM
+** Descriptions:        Initializes a global variable
+** Input parameters:    none
+** Output parameters:   none
+** Returned value:      none
+*********************************************************************************************************/
+
+void InitRAM(void) {
+   gQueuedCmdIndex = 0;
+
+   gJOGJointParams.velocity[0] = 100;
+   gJOGJointParams.velocity[1] = 100;
+   gJOGJointParams.velocity[2] = 100;
+   gJOGJointParams.velocity[3] = 100;
+   gJOGJointParams.acceleration[0] = 80;
+   gJOGJointParams.acceleration[1] = 80;
+   gJOGJointParams.acceleration[2] = 80;
+   gJOGJointParams.acceleration[3] = 80;
+
+   gJOGCoordinateParams.velocity[0] = 100;
+   gJOGCoordinateParams.velocity[1] = 100;
+   gJOGCoordinateParams.velocity[2] = 100;
+   gJOGCoordinateParams.velocity[3] = 100;
+   gJOGCoordinateParams.acceleration[0] = 80;
+   gJOGCoordinateParams.acceleration[1] = 80;
+   gJOGCoordinateParams.acceleration[2] = 80;
+   gJOGCoordinateParams.acceleration[3] = 80;
+
+   gJOGCommonParams.velocityRatio = 50;
+   gJOGCommonParams.accelerationRatio = 50;
+
+   gJOGCmd.cmd = AP_DOWN;
+   gJOGCmd.isJoint = JOINT_MODEL;
+
+   //Set PTP Model
+   gPTPCoordinateParams.xyzVelocity = 100;
+   gPTPCoordinateParams.rVelocity = 100;
+   gPTPCoordinateParams.xyzAcceleration = 80;
+   gPTPCoordinateParams.rAcceleration = 80;
+
+   gPTPCommonParams.velocityRatio = 50;
+   gPTPCommonParams.accelerationRatio = 50;
+
+   gPTPCmd.ptpMode = MOVL_XYZ;
+
+   //Set initial pose (start position)
+   moveArm(startPosX, startPosY, startPosZ, startPosR, false);
+}
+
+/*********************************************************************************************************
+** Function name:       loop
+** Descriptions:        Program entry
+** Input parameters:    none
+** Output parameters:   none
+** Returned value:      none
+*********************************************************************************************************/
+
+void moveArm(float x, float y, float z, float r, bool vacuumOn) {
+   gPTPCmd.x = x;
+   gPTPCmd.y = y;
+   gPTPCmd.z = z;
+   gPTPCmd.r = r;
+
+   Serial.print("move to x:");
+   Serial.print(gPTPCmd.x);
+   Serial.print(" y:");
+   Serial.print(gPTPCmd.y);
+   Serial.print(" z:");
+   Serial.println(gPTPCmd.r);
+
+   SetPTPCmd(&gPTPCmd, true, &gQueuedCmdIndex);
+
+   if (endeffectorGripper == 1) {
+      if (vacuumOn == false && vacuumOn != currentVac) {
+         Serial.println("Open GRIPPER");
+         SetEndEffectorSuctionCup(false, true, &gQueuedCmdIndex);
+         ProtocolProcess();  //Have command(s) executed by dobot
+         delay(500);
+         SetEndEffectorGripper(true, true, &gQueuedCmdIndex);  //Buka Gripper (compressed air on);
+         ProtocolProcess();                              
+         delay(500);
+         SetEndEffectorGripper(false, true, &gQueuedCmdIndex);  //Matikan Gripper Ketika Gripper terbuka (compressed air off)
+         delay(500);
+      }
+   } else {
+      if (vacuumOn == false) SetEndEffectorSuctionCup(false, true, &gQueuedCmdIndex);
+      if (vacuumOn == true && vacuumOn != currentVac) SetEndEffectorSuctionCup(true, true, &gQueuedCmdIndex); 
+   }
+
+   if (vacuumOn == true && vacuumOn != currentVac) SetEndEffectorSuctionCup(true, true, &gQueuedCmdIndex);
+   if (vacuumOn == false) SetEndEffectorSuctionCup(false, true, &gQueuedCmdIndex);
+
+   ProtocolProcess();
+
+   currentX = x;
+   currentY = y;
+   currentZ = z;
+   currentR = r;
+   currentVac = vacuumOn;
+}
+
+void loop() {
+   InitRAM();
+
+   ProtocolInit();
+
+   SetJOGJointParams(&gJOGJointParams, true, &gQueuedCmdIndex);
+
+   SetJOGCoordinateParams(&gJOGCoordinateParams, true, &gQueuedCmdIndex);
+
+   SetJOGCommonParams(&gJOGCommonParams, true, &gQueuedCmdIndex);
+
+   printf("\r\n======Main Program loop started======\r\n");
+
+   SetPTPCmd(&gPTPCmd, true, &gQueuedCmdIndex);
+   ProtocolProcess();
+
+ 
+   for (;;)  //Mulai loop
+   {
+      nexLoop(nex_listen_list);  //Nextion
+
+      if (refreshScreen) {
+         displayText = String((gPTPCmd.x), 1);
+         t1.setText(displayText.c_str());
+         displayText = String((gPTPCmd.y), 1);
+         t2.setText(displayText.c_str());
+         displayText = String((gPTPCmd.z), 1);
+         t3.setText(displayText.c_str());
+         displayText = String((gPTPCmd.r), 1);
+         t4.setText(displayText.c_str());
+         refreshScreen = false;
+      }
+
+      if (autoCycleOn = true) {
+        
+         currentMillis = millis();  //Untuk delay
+         switch (moveStep) {
+            case 1:
+               Serial.println("Menuju CalPos (posisi untuk mendeteksi objek)");
+               moveArm(calXpos, calYpos, calZpos, currentR, currentVac);
+               previousMillis = currentMillis;
+               moveStep = 2;
+               break;
+            case 2:
+               if ((currentMillis - previousMillis) >= (4 * delayInterval)) {
+                  previousMillis = currentMillis;
+                  moveStep = 3;
+               }
+               break;
+            case 3:
+               static int i;
+               static int j = 0;
+               static int k = 0;  // counters for loops
+               // grab blocks!
+               pixy.ccc.getBlocks();
+
+               signature1Found = 0;
+               signature2Found = 0;
+               signature3Found = 0;
+               Serial.print("pixy.ccc.numBlocks = ");
+               Serial.println(pixy.ccc.numBlocks);
+               for (i = 0; i < pixy.ccc.numBlocks; i++) {
+                  if (pixy.ccc.blocks[i].m_signature == signaturePart1) {
+                     signature1Found++;
+                     j = i;
+                     activeSignature = 1;  //Cek apabila signature adalah signature 1 dan atur counter j ke address array
+                     pixy.ccc.blocks[i].print();
+                  }  //Print signature yang ditemukan ke serial monitor
+                  else if (pixy.ccc.blocks[i].m_signature == signaturePart2) {
+                     signature2Found++;
+                     j = i;
+                     activeSignature = 2;  
+                     pixy.ccc.blocks[i].print();
+                  }  
+                  else if (pixy.ccc.blocks[i].m_signature == signaturePart3) {
+                     signature3Found++;
+                     j = i;
+                     activeSignature = 3;  
+                     pixy.ccc.blocks[i].print();
+                  }                 }
+               if (signature1Found > 0 || signature2Found > 0 || signature3Found > 0) {
+                  pixyPartX = pixy.ccc.blocks[j].m_x;  //Memilih objek pertama yang ditemukan pada Array
+                  pixyPartY = pixy.ccc.blocks[j].m_y;
+                  Serial.println("Objek yang akan diambil:");
+                  pixy.ccc.blocks[j].print();
+                  Serial.print("pixyPartX: ");
+                  Serial.println(pixyPartX);
+                  Serial.print("pixyPartY: ");
+                  Serial.println(pixyPartY);
+                  displayText = String((pixyPartX), 1);
+                  t7.setText(displayText.c_str());
+                  displayText = String((pixyPartY), 1);
+                  t8.setText(displayText.c_str());
+
+                  pixyPartY = (207 - pixyPartY);  
+                  Serial.print("pixyPartY: setelah membalikkan sumbu Y dengan 207 - pixyPartY: ");
+                  Serial.println(pixyPartY);
+                  //Menghitung scaling antara kertas kalibrasi dan Dobot Magician
+                  scaleX = (sqrt(sq(b2X - a2X) + sq(b2Y - a2Y))) / (sqrt(sq(b1X - a1X) + sq(b1Y - a1Y)));
+                  Serial.print("scaleX: ");
+                  Serial.println(scaleX);
+                  scaleY = (sqrt(sq(c2X - a2X) + sq(c2Y - a2Y))) / (sqrt(sq(c1X - a1X) + sq(c1Y - a1Y)));
+                  Serial.print("scaleY: ");
+                  Serial.println(scaleY);
+                  lr1 = (sqrt(sq(b1X - a1X) + sq(b1Y - a1Y)));
+                  Serial.print("lr1: ");
+                  Serial.println(lr1);
+                  lr2 = (sqrt(sq(b2X - a2X) + sq(b2Y - a2Y)));
+                  Serial.print("lr2: ");
+                  Serial.println(lr2);
+                  
+                  dobotPartX = pixyPartX - a1X; //Translasikan koordinat sumbu X ke origin
+                  Serial.print("dobotPartX setelah ditranslasikan ke origin: ");
+                  Serial.println(dobotPartX);  
+                  dobotPartY = pixyPartY - a1Y; //Translasikan koordinat sumbu Y ke origin
+                  Serial.print("dobotPartY setelah ditranslasikan ke origin: ");
+                  Serial.println(dobotPartY); 
+                  angle1 = (acos((b1X - a1X) / lr1));
+                  Serial.print("angle1: ");
+                  Serial.println(angle1);  //Sudut antara kertas kalibrasi dan sistem koordinat Pixy2
+                  dobotPartX = (dobotPartX * cos(-1 * angle1)) + (dobotPartY * sin(-1 * angle1));
+                  Serial.print("dobotPartX setelah rotasi: ");
+                  Serial.println(dobotPartX);  //Putar koordinat sumbu X dari kertas kalibrasi ke sistem koordinat Pixy2 
+                  dobotPartY = ((-1 * dobotPartX) * sin(-1 * angle1)) + (dobotPartY * cos(-1 * angle1));
+                  Serial.print("dobotPartY setelah rotasi: ");
+                  Serial.println(dobotPartY);  //Putar koordinat sumbu Y dari kertas kalibrasi ke sistem koordinat Pixy2
+                  dobotPartX = dobotPartX * scaleX;
+                  Serial.print("dobotPartX setelah scaling: ");
+                  Serial.println(dobotPartX);  //Scaling sumbu X antara Pixy2 dan Dobot Magician 
+                  dobotPartY = dobotPartY * scaleY;
+                  Serial.print("dobotPartY setelah scaling: ");
+                  Serial.println(dobotPartY);  //Scaling sumbu Y antara Pixy2 dan Dobot Magician
+                  angle2 = (acos((b2X - a2X) / lr2));
+                  Serial.print("angle2: ");
+                  Serial.println(angle2);  //Sudut antara sistem koordinat Pixy2 dan Dobot Magician
+                  intermediateX = dobotPartX;
+                  intermediateY = dobotPartY; 
+                  dobotPartX = (intermediateX * cos(angle2)) + (intermediateY * sin(angle2));
+                  Serial.print("dobotPartX setelah diputar ke sistem koordinat Dobot Magician: ");
+                  Serial.println(dobotPartX);  //Putar koordinat sumbu X ke sistem koordinat Dobot Magician
+                  dobotPartY = ((-1 * intermediateX) * sin(angle2)) + (intermediateY * cos(angle2));
+                  Serial.print("dobotPartY setelah diputar ke sistem koordinat Dobot Magician: ");
+                  Serial.println(dobotPartY);  //Putar koordinat sumbu Y ke sistem koordinat Dobot Magician
+                  dobotPartX = dobotPartX + a2X;
+                  Serial.print("dobotPartX setelah translasi: ");
+                  Serial.println(dobotPartX);  //Translasikan koordinat sumbu X dari origin ke tujuan
+                  dobotPartY = dobotPartY + a2Y;
+                  Serial.print("dobotPartY setelah translasi: ");
+                  Serial.println(dobotPartY);  //Translasikan koordinat sumbu Y dari origin ke tujuan
+
+                  previousMillis = currentMillis;
+                  moveStep = 4;
+                  break;
+               } else {
+                  autoCycleOn = false;
+                  moveStep = 0;
+                  Serial.println(" ");
+                  Serial.print("Error: Tidak ditemukan object, minimal 1 objek diperlukan untuk memulai proses pick and place!!!");
+                  Serial.println("Pick and Place DIBATALKAN");
+                  break;
+               }
+            case 4:
+               Serial.println("Menuju partXY dan Zdown+20");
+               moveArm(dobotPartX, dobotPartY, (zDownPos + 20), currentR, currentVac);  
+               previousMillis = currentMillis;
+               moveStep = 5;
+               break;
+            case 5:
+               if ((currentMillis - previousMillis) >= (2 * delayInterval)) {
+                  previousMillis = currentMillis;
+                  moveStep = 6;
+               }
+               break;
+
+            case 6:
+               Serial.println("Menuju ZdownPos");
+               moveArm(dobotPartX, dobotPartY, zDownPos, currentR, currentVac);  //
+               previousMillis = currentMillis;
+               moveStep = 7;
+               break;
+            case 7:
+               if ((currentMillis - previousMillis) >= (2 * delayInterval)) {
+                  previousMillis = currentMillis;
+                  moveStep = 8;
+               }
+               break;
+            case 8:
+               moveArm(dobotPartX, dobotPartY, zDownPos, currentR, true);  
+               previousMillis = currentMillis;
+               moveStep = 9;
+               break;
+            case 9:
+               if ((currentMillis - previousMillis) >= (1 * delayInterval)) {
+                  previousMillis = currentMillis;
+                  moveStep = 10;
+               }
+               break;
+            case 10:
+               switch (activeSignature) {
+                  case 1:
+                     moveArm(dobotPartX, dobotPartY, dropLocation1Z, currentR, currentVac);
+                     moveArm(dropLocation1X, dropLocation1Y, dropLocation1Z, currentR, currentVac);
+                     break;
+                  case 2:
+                     moveArm(dobotPartX, dobotPartY, dropLocation2Z, currentR, currentVac);
+                     moveArm(dropLocation2X, dropLocation2Y, dropLocation2Z, currentR, currentVac);
+                     break;
+                  case 3:
+                     moveArm(dobotPartX, dobotPartY, dropLocation3Z, currentR, currentVac);
+                     moveArm(dropLocation3X, dropLocation3Y, dropLocation3Z, currentR, currentVac);
+                     break;
+               }
+               previousMillis = currentMillis;
+               moveStep = 11;
+               break;
+            case 11:
+               if ((currentMillis - previousMillis) >= (4 * delayInterval)) {
+                  previousMillis = currentMillis;
+                  moveStep = 12;
+               }
+               break;
+            case 12:
+               moveArm(currentX, currentY, currentZ, currentR, false);
+               previousMillis = currentMillis;
+               moveStep = 13;
+               break;
+            case 13:
+               if ((currentMillis - previousMillis) >= (1 * delayInterval)) {
+                  previousMillis = currentMillis;
+                  moveStep = 1;
+               }
+               break;
+         }
+
+     }
+
+      delay(10);
+
+      //Akhiri loop
+   }
+}
